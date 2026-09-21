@@ -1,0 +1,86 @@
+=========================================================
+platformtaxhub-mcp — what's built, and how to ship it
+=========================================================
+
+WHAT THIS IS:
+An MCP (Model Context Protocol) server — a small program that lets AI
+agents (Claude, and any other MCP-compatible agent) call your three
+tools directly, the same way they call built-in tools like "search the
+web." No browser, no scraping — the agent gets structured JSON back.
+
+TOOLS BUILT (tested end-to-end, including error cases):
+1. take_home_pay_calculator + list_take_home_platforms
+   — ported verbatim from take-home-pay.html's calculate() logic.
+2. platform_payout_calendar + list_payout_platforms
+   — ported from platform-payout-calendar.html's date math, but fetches
+     LIVE data from the same n8n webhook the real page uses
+     (https://n8n.platformtaxhub.com/webhook/platform-payout-data),
+     cached 5 minutes. If you ever add a platform or fix a payout date
+     on the live site/webhook, this tool picks it up automatically —
+     no redeploy needed. Also fixed a real bug during testing: for
+     weekly-schedule platforms (e.g. Upwork), the tool now rolls
+     forward to the actual NEXT upcoming payout instead of possibly
+     returning a date already in the past, when no month is specified.
+3. benefits_safety_net_calculator + list_benefits_countries
+   — ported verbatim from benefits-safety-net.html's calculateBenefits().
+4. currency_takehome_calculator + list_currency_takehome_countries
+   — the aggregator: combines several platforms' earnings, each in its own
+     currency, into one converted total via whichever international-account
+     provider nets the most money. Uses live exchange rates (Frankfurter.dev
+     for major pairs, PlatformTaxHub's own get-exchange-rate function for
+     everything else — same two sources currency-takehome.html uses).
+     Sanity-checked against hand math: $5,000 gross at 45% platform fee via
+     Mercury (0% fee/FX) = exactly $2,750 net.
+5. list_platformtaxhub_tools
+   — discovery tool listing the other free calculators on the site (mileage
+     deduction, tax deadline clock, fees comparison, etc.) that aren't
+     wrapped as their own MCP tool, so an agent still has somewhere useful
+     to point a user whose question falls outside the 4 core tools. Kept
+     as ONE dedicated tool rather than stuffing links into every response —
+     take_home_pay_calculator does add one small, genuinely relevant
+     cross-reference (to the mileage deduction tool) when the platform is
+     a driving platform, but that's the only per-response breadcrumb.
+
+WHERE TO PUBLISH:
+1. npm (required — this is how npx/Claude Desktop/Claude Code install it):
+   cd platformtaxhub-mcp
+   npm login          (your own npm account, free)
+   npm publish
+   The name "platformtaxhub-mcp" is free and unclaimed on npm right now.
+
+2. GitHub (recommended — registries want a real repo to link to, and it's
+   the natural place for people to file issues / see it's maintained):
+   Create a repo (e.g. github.com/<you>/platformtaxhub-mcp), push this
+   folder to it.
+
+3. Registries (free, no approval cost — these just crawl/list npm+GitHub
+   MCP servers, they don't gate access):
+   - Smithery (smithery.ai) — submit via their site, links your GitHub repo.
+   - Glama (glama.ai/mcp/servers) — same, submit your GitHub repo.
+   - PulseMCP (pulsemcp.com) — same.
+   All three mainly want: a working npm package, a README explaining the
+   tools (done), and a GitHub repo they can point people to.
+
+HOW SOMEONE WOULD ACTUALLY USE IT (once published):
+Add to their MCP client config (Claude Desktop, Claude Code, etc.):
+  {
+    "mcpServers": {
+      "platformtaxhub": {
+        "command": "npx",
+        "args": ["-y", "platformtaxhub-mcp"]
+      }
+    }
+  }
+Then just ask their agent something like "what's my Uber take-home on
+$5,000 gross this month" or "when's my next Upwork payout arriving" —
+the agent calls your tool directly and gets your real numbers back.
+
+WHAT'S NOT DONE / DECISIONS STILL NEEDED FROM YOU:
+- npm publish requires YOUR npm login — I can't do that step, it's your
+  account. Everything else in the package is ready to publish as-is.
+- No GitHub repo created yet — tell me if you want me to prep the repo
+  structure/commit for you to push, or if you'll create it yourself.
+- Maintenance note: if the take-home-pay.html platform list or fee %s
+  change, or benefits-safety-net.html's country list changes, src/data.ts
+  needs the matching update and a version bump + republish. The payout
+  calendar tool needs no maintenance since it reads live data.
