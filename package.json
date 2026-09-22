@@ -1,6 +1,6 @@
 {
     "name": "platformtaxhub-mcp",
-    "version": "1.1.1",
+    "version": "1.2.0",
     "mcpName": "io.github.platformtaxhub-hash/platformtaxhub-mcp",
     "description": "MCP server exposing PlatformTaxHub's free platform-income calculators as tools for AI agents: take-home pay, payout calendar, benefits safety net, and combined multi-platform/multi-currency income conversion.",
     "repository": {
