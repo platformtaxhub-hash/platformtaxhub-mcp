@@ -3,20 +3,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
-  PLATFORM_FEES,
-  CURRENCY_SYMBOLS,
-  PERIOD_DIVISORS,
-  BENEFITS_CURRENCY_DATA,
-  ICP_DATA,
+  callCompute,
   PAYOUT_DATA_API,
   PayoutDataResponse,
   PlatformPayoutEntry,
-  BORDERLESS_ACCOUNTS,
-  CURRENCY_TAKEHOME_COUNTRIES,
   MAJOR_CURRENCIES,
   FRANKFURTER_URL,
   EXCHANGE_RATE_FUNCTION_URL,
-  loadStaticData,
 } from "./data.js";
 
 const server = new McpServer({
@@ -27,10 +20,6 @@ const server = new McpServer({
 });
 
 // ── Tool 1: take_home_pay_calculator ──────────────────────────────────────
-
-function money(symbol: string, amount: number): string {
-  return symbol + amount.toLocaleString(undefined, { maximumFractionDigits: 2 });
-}
 
 server.registerTool(
   "take_home_pay_calculator",
@@ -64,71 +53,21 @@ server.registerTool(
     },
   },
   async ({ platform, grossAmount, currency, period, includeCurrencyConversion, includeTransactionFee }) => {
-    const entry = PLATFORM_FEES.find((p) => p.id === platform);
-    if (!entry) {
-      const ids = PLATFORM_FEES.map((p) => p.id).join(", ");
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: `Unknown platform id "${platform}". Valid ids: ${ids}`,
-          },
-        ],
-      };
+    try {
+      const result = await callCompute("take_home_pay", {
+        platform,
+        grossAmount,
+        currency,
+        period,
+        includeCurrencyConversion,
+        includeTransactionFee,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      return { isError: true, content: [{ type: "text", text: e.message }] };
     }
-
-    const symbol = CURRENCY_SYMBOLS[currency.toUpperCase()] ?? CURRENCY_SYMBOLS.USD;
-    const m_gross = grossAmount;
-
-    let m_platformFee = m_gross * (entry.feePercent / 100);
-    if (entry.flatFee) m_platformFee = entry.flatFee;
-
-    const m_fxFee = includeCurrencyConversion ? (m_gross - m_platformFee) * 0.02 : 0;
-    const includeTxn = includeTransactionFee && !!entry.txnFlat;
-    const m_txnFee = includeTxn ? (entry.txnFlat as number) : 0;
-
-    const m_totalLoss = m_platformFee + m_fxFee + m_txnFee;
-    const m_net = m_gross - m_totalLoss;
-    const lossPercent = m_gross > 0 ? Math.round((m_totalLoss / m_gross) * 100) : 0;
-
-    const div = PERIOD_DIVISORS[period] ?? 1;
-    const displayNet = m_net / div;
-    const displayFee = m_platformFee / div;
-    const displayFx = m_fxFee / div;
-    const displayTxn = m_txnFee / div;
-
-    const result = {
-      platform: entry.name,
-      platformId: entry.id,
-      feePercent: entry.flatFee ? null : entry.feePercent,
-      flatFee: entry.flatFee ?? null,
-      isEstimatedRate: !!entry.estimate,
-      estimateNote: entry.estimateLabel ?? null,
-      period,
-      currency: currency.toUpperCase(),
-      grossPerMonth: money(symbol, m_gross),
-      breakdown: {
-        [`platformFeePer${cap(period)}`]: "-" + money(symbol, displayFee),
-        ...(includeCurrencyConversion ? { [`currencyConversionPer${cap(period)}`]: "-" + money(symbol, displayFx) } : {}),
-        ...(includeTxn ? { [`${(entry.txnLabel || "transactionFee").replace(/\s+/g, "")}Per${cap(period)}`]: "-" + money(symbol, displayTxn) } : {}),
-      },
-      netTakeHomePerPeriod: money(symbol, displayNet),
-      totalLossPercent: lossPercent + "%",
-      note:
-        "This isolates platform fees and currency conversion only. It does not include income tax or self-employment tax, which depend on total annual income and country of residence." +
-        (["uber-lyft", "bolt", "indrive", "doordash-deliveroo"].includes(entry.id)
-          ? " Driving for this platform also usually qualifies for a per-mile/km tax deduction — see the mileage_deduction tool info via list_platformtaxhub_tools."
-          : ""),
-    };
-
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
-
-function cap(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
 
 server.registerTool(
   "list_take_home_platforms",
@@ -139,29 +78,18 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            PLATFORM_FEES.map((p) => ({
-              id: p.id,
-              name: p.name,
-              category: p.category,
-              fee: p.flatFee ? `$${p.flatFee} flat` : `${p.feePercent}%`,
-              hasTransactionFeeOption: !!p.txnFlat,
-              isEstimatedRate: !!p.estimate,
-            })),
-            null,
-            2
-          ),
-        },
-      ],
-    };
+    try {
+      const result = await callCompute("list_platforms", {});
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      return { isError: true, content: [{ type: "text", text: e.message }] };
+    }
   }
 );
 
 // ── Tool 2: platform_payout_calendar ──────────────────────────────────────
+// Unchanged — this one already worked as a live, server-computed lookup
+// rather than shipping raw data in the package.
 
 function getPayoutDate(platform: PlatformPayoutEntry, baseMonth: Date): Date | null {
   if (!platform.payoutDay || !platform.payoutDay.type) return null;
@@ -300,12 +228,6 @@ server.registerTool(
       baseMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     }
 
-    // When the caller pins a specific month, behave like the live calendar
-    // page's month picker: show that month's occurrence even if it's in the
-    // past. When no month is given, the intent is "when's my NEXT payout" —
-    // so roll forward past occurrences until we find one that hasn't
-    // happened yet (weekly platforms advance a week at a time, everything
-    // else advances a month at a time).
     const explicitMonth = !!month;
     const today = new Date();
 
@@ -374,18 +296,12 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            Object.entries(BENEFITS_CURRENCY_DATA).map(([country, cur]) => ({ country, currencyCode: cur.code })),
-            null,
-            2
-          ),
-        },
-      ],
-    };
+    try {
+      const result = await callCompute("list_benefits_countries", {});
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      return { isError: true, content: [{ type: "text", text: e.message }] };
+    }
   }
 );
 
@@ -415,55 +331,28 @@ server.registerTool(
     },
   },
   async ({ country, monthlyIncome, icp, setAsidePercent, emergencyPercent }) => {
-    const currency = BENEFITS_CURRENCY_DATA[country];
-    if (!currency) {
-      const names = Object.keys(BENEFITS_CURRENCY_DATA).join(", ");
-      return { isError: true, content: [{ type: "text", text: `Unknown country "${country}". Valid countries: ${names}` }] };
+    try {
+      const result = await callCompute("benefits_safety_net", {
+        country,
+        monthlyIncome,
+        icp,
+        setAsidePercent,
+        emergencyPercent,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      return { isError: true, content: [{ type: "text", text: e.message }] };
     }
-    const symbol = currency.symbol;
-    const icpInfo = ICP_DATA[icp] || ICP_DATA.gig;
-
-    const totalPercent = setAsidePercent > 0 ? setAsidePercent : 5;
-    const healthPercent = totalPercent * 0.6;
-    const pensionPercent = totalPercent * 0.4;
-
-    const monthlySetAside = monthlyIncome * (totalPercent / 100);
-    const healthAmount = monthlyIncome * (healthPercent / 100);
-    const pensionAmount = monthlyIncome * (pensionPercent / 100);
-    const perGigAmount = monthlySetAside / 20; // reference estimate: 20 gigs/month
-
-    const emergencyAmount = monthlyIncome * ((emergencyPercent || 0) / 100);
-
-    const result = {
-      country,
-      currencyCode: currency.code,
-      monthlyIncome: money(symbol, monthlyIncome),
-      setAsidePercent: round1(totalPercent) + "%",
-      monthlySetAside: money(symbol, monthlySetAside),
-      breakdown: {
-        health: { percent: round1(healthPercent) + "%", amount: money(symbol, healthAmount) },
-        retirement: { percent: round1(pensionPercent) + "%", amount: money(symbol, pensionAmount) },
-        ...(emergencyPercent > 0
-          ? { emergencyBuffer: { percent: round1(emergencyPercent) + "%", amount: money(symbol, emergencyAmount) + " extra/mo" } }
-          : {}),
-      },
-      perUnitEstimate: `${money(symbol, perGigAmount)} per ${icpInfo.perUnit} (assumes ~20 ${icpInfo.unit}s/month — set aside this much each ${icpInfo.unit}, or take on one extra ${icpInfo.unit}/month to cover it)`,
-      note: "This is a self-funded safety-net planning estimate, not tax or insurance advice. It does not account for country-specific public benefit eligibility, which varies.",
-    };
-
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
-
-function round1(n: number): number {
-  return Math.round(n * 10) / 10;
-}
 
 // ── Tool 4: currency_takehome_calculator ──────────────────────────────────
 // The genuine differentiator: combine earnings from several platforms,
 // each in its own currency, into one converted total via whichever
 // available international-account provider nets the most money for the
-// user's country. Ported from currency-takehome.html's calculateMultiple().
+// user's country. Exchange-rate lookups stay client-side (not proprietary);
+// the provider comparison itself is computed server-side via callCompute,
+// so the raw provider fee/FX table never leaves PlatformTaxHub's API.
 
 const rateCache = new Map<string, { rate: number; fetchedAt: number }>();
 const RATE_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12h, matches the live page
@@ -502,18 +391,12 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            Object.entries(CURRENCY_TAKEHOME_COUNTRIES).map(([code, name]) => ({ code, name })),
-            null,
-            2
-          ),
-        },
-      ],
-    };
+    try {
+      const result = await callCompute("list_currency_countries", {});
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      return { isError: true, content: [{ type: "text", text: e.message }] };
+    }
   }
 );
 
@@ -548,23 +431,7 @@ server.registerTool(
   },
   async ({ country, targetCurrency, platforms }) => {
     const countryCode = country.toUpperCase();
-    if (!CURRENCY_TAKEHOME_COUNTRIES[countryCode]) {
-      const codes = Object.keys(CURRENCY_TAKEHOME_COUNTRIES).join(", ");
-      return { isError: true, content: [{ type: "text", text: `Unknown country code "${country}". Valid codes: ${codes}` }] };
-    }
     const toCur = targetCurrency.toUpperCase();
-
-    const availableProviders = BORDERLESS_ACCOUNTS.filter((p) => p.countries.includes(countryCode));
-    if (availableProviders.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ error: `No international-account providers currently listed for ${CURRENCY_TAKEHOME_COUNTRIES[countryCode]}.` }, null, 2),
-          },
-        ],
-      };
-    }
 
     const uniqueFromCurrencies = [...new Set(platforms.map((r) => r.currency.toUpperCase()))];
     const rateMap: Record<string, number> = {};
@@ -577,35 +444,27 @@ server.registerTool(
     }
 
     let totalGrossInToCur = 0;
-    const computed = availableProviders.map((p) => {
-      let totalReceived = 0;
-      platforms.forEach((r) => {
-        const rate = rateMap[r.currency.toUpperCase()];
-        const afterPlatform = r.amount * (1 - r.platformFeePercent / 100);
-        let feeAmount: number, fxCost: number;
-        if (p.feeModel === "flat") {
-          feeAmount = p.flatFee || 0;
-          fxCost = afterPlatform * ((p.fx || 0) / 100);
-        } else {
-          feeAmount = afterPlatform * ((p.fee || 0) / 100) + (p.fixed || 0);
-          fxCost = afterPlatform * ((p.fx || 0) / 100);
-        }
-        const afterFees = afterPlatform - feeAmount - fxCost;
-        totalReceived += afterFees * rate;
-      });
-      return { ...p, totalReceived };
-    });
-    // totalGrossInToCur (no fees deducted at all) is provider-independent —
-    // compute it once, outside the per-provider loop, matching the live page.
-    platforms.forEach((r) => {
-      totalGrossInToCur += r.amount * rateMap[r.currency.toUpperCase()];
+    const convertedPlatforms = platforms.map((r) => {
+      const rate = rateMap[r.currency.toUpperCase()];
+      const afterPlatform = r.amount * (1 - r.platformFeePercent / 100);
+      totalGrossInToCur += r.amount * rate;
+      return { afterPlatformConverted: afterPlatform * rate };
     });
 
-    computed.sort((a, b) => b.totalReceived - a.totalReceived);
-    const symbol = CURRENCY_SYMBOLS[toCur] ?? toCur + " ";
+    let computeResult: any;
+    try {
+      computeResult = await callCompute("currency_takehome", {
+        countryCode,
+        toCur,
+        totalGrossInToCur,
+        convertedPlatforms,
+      });
+    } catch (e: any) {
+      return { isError: true, content: [{ type: "text", text: e.message }] };
+    }
 
     const result = {
-      country: CURRENCY_TAKEHOME_COUNTRIES[countryCode],
+      country: computeResult.country,
       targetCurrency: toCur,
       platformCount: platforms.length,
       platforms: platforms.map((r) => ({
@@ -614,18 +473,10 @@ server.registerTool(
         currency: r.currency.toUpperCase(),
         platformFeePercent: r.platformFeePercent,
       })),
-      combinedGrossConverted: money(symbol, totalGrossInToCur),
-      bestProvider: {
-        name: computed[0].name,
-        type: computed[0].type,
-        combinedNetReceived: money(symbol, computed[0].totalReceived),
-        totalCost: money(symbol, totalGrossInToCur - computed[0].totalReceived),
-      },
-      allProviders: computed.map((p) => ({
-        name: p.name,
-        combinedNetReceived: money(symbol, p.totalReceived),
-      })),
-      note: "Uses live exchange rates. Provider fees/FX markups are current as of this server's data — always verify final terms with the provider directly before choosing one to open an account with.",
+      combinedGrossConverted: computeResult.combinedGrossConverted,
+      bestProvider: computeResult.bestProvider,
+      allProviders: computeResult.allProviders,
+      note: "Uses live exchange rates. Provider fees/FX markups are current as of PlatformTaxHub's own data — always verify final terms with the provider directly before choosing one to open an account with.",
     };
 
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
@@ -661,7 +512,6 @@ server.registerTool(
 // ── Start ──────────────────────────────────────────────────────────────
 
 async function main() {
-  await loadStaticData();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("platformtaxhub-mcp server running on stdio");
