@@ -16,11 +16,12 @@ import {
   MAJOR_CURRENCIES,
   FRANKFURTER_URL,
   EXCHANGE_RATE_FUNCTION_URL,
+  loadStaticData,
 } from "./data.js";
 
 const server = new McpServer({
   name: "platformtaxhub-mcp",
-  version: "1.1.0",
+  version: "1.2.0",
   description:
     "Free platform-income calculators from PlatformTaxHub / Platform Income Utils (platformincome.com) — take-home pay after platform fees, platform payout-arrival dates, gig/freelance benefits safety-net set-aside amounts, and combined multi-platform/multi-currency income conversion. Covers 18+ platforms and 40+ countries.",
 });
@@ -660,6 +661,7 @@ server.registerTool(
 // ── Start ──────────────────────────────────────────────────────────────
 
 async function main() {
+  await loadStaticData();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("platformtaxhub-mcp server running on stdio");
